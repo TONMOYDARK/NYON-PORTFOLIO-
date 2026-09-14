@@ -1,22 +1,31 @@
-// QUICK ADMIN LOGIN
-// IMPORTANT: This is a client-side gate, not a security system. For real security use Supabase Auth.
-const ADMIN_USER = 'admin';
-const ADMIN_PASS = 'Nyon@2026';
-
-const defaults={name:'YOUR NAME',title:'Tech Enthusiast & Digital Creator',bio:'Welcome to my personal space. Find my profile, skills and ways to connect with me.',about:'Add your personal introduction from the Edit Profile page.',location:'Bangladesh',focus:'Technology & Digital Work',phone:'+880 0000-000000',email:'your@email.com',facebook:'',instagram:'',whatsapp:'',linkedin:'',photo:'assets/profile-placeholder.svg',cv:'',skills:['Computer Software & Hardware','Electrical','Social Media','Technology','Outdoor Work','Digital Projects']};
-const loginBox=document.getElementById('loginBox'), editor=document.getElementById('editor');
-function showEditor(){loginBox.hidden=true;editor.hidden=false;loadEditor();}
-function isLogged(){return sessionStorage.getItem('portfolioAdminLoggedIn')==='1'}
-if(isLogged()) showEditor();
-
-document.getElementById('loginForm').addEventListener('submit',e=>{e.preventDefault();const u=document.getElementById('loginUser').value.trim(),p=document.getElementById('loginPass').value;if(u===ADMIN_USER&&p===ADMIN_PASS){sessionStorage.setItem('portfolioAdminLoggedIn','1');document.getElementById('loginError').textContent='';showEditor()}else document.getElementById('loginError').textContent='Incorrect username or password.'});
-document.getElementById('logout').onclick=()=>{sessionStorage.removeItem('portfolioAdminLoggedIn');location.reload()};
-
-function loadEditor(){
-const data={...defaults,...JSON.parse(localStorage.getItem('portfolioData')||'{}')};
-const ids=['name','title','bio','about','location','focus','phone','email','facebook','instagram','whatsapp','linkedin'];ids.forEach(id=>document.getElementById(id).value=data[id]||'');document.getElementById('skills').value=(data.skills||[]).join('\n');document.getElementById('preview').src=data.photo||defaults.photo;
-document.getElementById('photoFile').onchange=e=>{const f=e.target.files[0];if(!f)return;if(f.size>4*1024*1024){alert('Please choose a photo under 4 MB.');e.target.value='';return}const r=new FileReader();r.onload=()=>document.getElementById('preview').src=r.result;r.readAsDataURL(f)};
-document.getElementById('form').onsubmit=e=>{e.preventDefault();ids.forEach(id=>data[id]=document.getElementById(id).value.trim());data.skills=document.getElementById('skills').value.split('\n').map(x=>x.trim()).filter(Boolean);const photo=document.getElementById('preview').src;if(photo&&photo!==location.origin+'/assets/profile-placeholder.svg')data.photo=photo;const cv=document.getElementById('cvFile').files[0];if(cv){if(cv.size>5*1024*1024){alert('Please choose a CV under 5 MB.');return}const r=new FileReader();r.onload=()=>{data.cv=r.result;save(data)};r.readAsDataURL(cv)}else save(data)};
-document.getElementById('reset').onclick=()=>{if(confirm('Reset all fields?')){localStorage.removeItem('portfolioData');location.reload()}};
+const { createClient } = window.supabase;
+const sb=createClient(window.SUPABASE_URL,window.SUPABASE_ANON_KEY);
+const $=id=>document.getElementById(id);const msg=t=>{$('notice').textContent=t};
+let profile;
+async function guard(){
+ const {data:{user}}=await sb.auth.getUser();
+ if(!user){location.href='auth.html';return null}
+ const {data:p,error}=await sb.from('profiles').select('*').eq('id',user.id).maybeSingle();
+ if(error||!p||p.role!=='admin'){await sb.auth.signOut();document.body.innerHTML='<main class="admin"><div class="panel"><h1>Access denied</h1><p>This account is not an admin.</p><a class="save" href="auth.html">Back to login</a></div></main>';return null}
+ profile=p;fill(p,user);return user;
 }
-function save(data){localStorage.setItem('portfolioData',JSON.stringify(data));document.getElementById('notice').textContent='✓ Saved. Open the portfolio to see changes.'}
+function fill(p,user){
+ $('username').value=p.username||'';$('name').value=p.display_name||'';$('title').value=p.title||'';$('bio').value=p.bio||'';$('about').value=p.about||'';$('location').value=p.location||'';$('focus').value=p.focus||'';$('phone').value=p.phone||'';$('email').value=user.email||p.email||'';$('facebook').value=p.facebook||'';$('instagram').value=p.instagram||'';$('whatsapp').value=p.whatsapp||'';$('linkedin').value=p.linkedin||'';$('skills').value=(p.skills||[]).join('\n');$('preview').src=p.photo_url||'assets/profile-placeholder.svg';
+}
+async function upload(file,type,user){
+ if(!file)return profile[type==='photo'?'photo_url':'cv_url']||'';
+ const max=type==='photo'?4:8;if(file.size>max*1024*1024)throw Error(`File must be under ${max} MB.`);
+ const ext=(file.name.split('.').pop()||'bin').toLowerCase();const path=`${user.id}/${type}-${Date.now()}.${ext}`;
+ const {error}=await sb.storage.from('portfolio').upload(path,file,{upsert:true});if(error)throw error;
+ return sb.storage.from('portfolio').getPublicUrl(path).data.publicUrl;
+}
+$('photoFile').addEventListener('change',e=>{const f=e.target.files[0];if(f)$('preview').src=URL.createObjectURL(f)});
+$('form').addEventListener('submit',async e=>{e.preventDefault();const {data:{user}}=await sb.auth.getUser();if(!user)return location.href='auth.html';try{
+ const photo=await upload($('photoFile').files[0],'photo',user);const cv=await upload($('cvFile').files[0],'cv',user);
+ const updates={username:$('username').value.trim(),display_name:$('name').value.trim(),title:$('title').value.trim(),bio:$('bio').value.trim(),about:$('about').value.trim(),location:$('location').value.trim(),focus:$('focus').value.trim(),phone:$('phone').value.trim(),email:$('email').value.trim(),facebook:$('facebook').value.trim(),instagram:$('instagram').value.trim(),whatsapp:$('whatsapp').value.trim(),linkedin:$('linkedin').value.trim(),skills:$('skills').value.split('\n').map(x=>x.trim()).filter(Boolean),photo_url:photo,cv_url:cv,updated_at:new Date().toISOString()};
+ const {error}=await sb.from('profiles').update(updates).eq('id',user.id);if(error)throw error;
+ if($('email').value.trim() && $('email').value.trim()!==user.email){const {error:e2}=await sb.auth.updateUser({email:$('email').value.trim()});if(e2)throw e2;msg('Profile saved. Check the confirmation email if you changed the login email.')}else msg('✓ Profile saved for everyone.');profile={...profile,...updates};
+ }catch(err){msg(err.message||'Could not save.');}});
+$('passwordForm').addEventListener('submit',async e=>{e.preventDefault();const p=$('newPassword').value;if(p.length<6)return msg('Password must be at least 6 characters.');const {error}=await sb.auth.updateUser({password:p});if(error)return msg(error.message);$('newPassword').value='';msg('✓ Password changed.');});
+$('logout').onclick=async()=>{await sb.auth.signOut();location.href='auth.html'};
+guard();
